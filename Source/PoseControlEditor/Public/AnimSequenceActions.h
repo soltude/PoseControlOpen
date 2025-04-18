@@ -4,7 +4,6 @@
 
 #include "CoreMinimal.h"
 #include "EditorUtilityLibrary.h"
-#include "DataAssets/DthImportDataAsset.h"
 #include "Editor/Blutility/Classes/AssetActionUtility.h"
 #include "UObject/Object.h"
 #include "AnimSequenceActions.generated.h"
@@ -20,17 +19,17 @@ public:
 	UAnimSequenceActions();
 
 
-	UFUNCTION(BlueprintCallable, CallInEditor)
-	void CreatePoseAssets();
-
-	UFUNCTION(BlueprintCallable, CallInEditor)
-	void CreatePoseAssetsWithDataAsset(UDthImportDataAsset* InDataAsset);
-
-	UFUNCTION(BlueprintCallable)
-	static TArray<FString> GetPoseNames(UDthImportDataAsset* DthImportDataAsset, FString AnimName);
-		
-	UPROPERTY(BlueprintReadWrite, EditAnywhere)
-	TObjectPtr<UDthImportDataAsset> DthImportDataAsset;
+	// UFUNCTION(BlueprintCallable, CallInEditor)
+	// void CreatePoseAssets();
+	//
+	// UFUNCTION(BlueprintCallable, CallInEditor)
+	// void CreatePoseAssetsWithDataAsset(UDthImportDataAsset* InDataAsset);
+	//
+	// UFUNCTION(BlueprintCallable)
+	// static TArray<FString> GetPoseNames(UDthImportDataAsset* DthImportDataAsset, FString AnimName);
+	// 	
+	// UPROPERTY(BlueprintReadWrite, EditAnywhere)
+	// TObjectPtr<UDthImportDataAsset> DthImportDataAsset;
 
 	UPROPERTY(BlueprintReadWrite, EditAnywhere)
 	TArray<FName> FbmPoseNames;

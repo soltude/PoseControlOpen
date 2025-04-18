@@ -30,323 +30,8 @@
 #include "Toolkits/ToolkitManager.h"
 #include "UObject/PackageRelocation.h"
 
-TArray<FName> TwistBoneNames = { FName("upperarm_twist_01_l"), FName("upperarm_twist_02_l"), FName("upperarm_twist_01_r"), FName("upperarm_twist_02_r"), FName("lowerarm_twist_01_l"), FName("lowerarm_twist_02_l"), FName("lowerarm_twist_01_r"), FName("lowerarm_twist_02_r"), FName("thigh_twist_01_l"), FName("thigh_twist_02_l"), FName("thigh_twist_01_r"), FName("thigh_twist_02_r") };
-
-UPhysicsEditorBPLibrary::UPhysicsEditorBPLibrary()
-{
-	if(!BodyParamsDataTable)
-	{
-		static ConstructorHelpers::FObjectFinder<UDataTable> BodyParamsDT(TEXT("/Script/Engine.DataTable'/PoseControl/Data/DT_BodyParams.DT_BodyParams'"));
-		BodyParamsDataTable =  BodyParamsDT.Object;
-	}
-	
-}
-
-FString MakeAssetPath(FString Directory, FString Filename, FString Prefix = FString())
-{
-	if(Directory[Directory.Len() - 1] != '/')
-		Directory += "/";
-	return Directory + Prefix + Filename;
-}
-
-bool UPhysicsEditorBPLibrary::SetDataAsset(UPcActorDataAsset* DataAsset)
-{
-	PcActorDataAsset = DataAsset;	
-	if (!DataAsset) {
-		LGE("No Data Asset found. Aborting.")
-		return false; }
-	
-	// if TargetPhysicsAsset doesn't exist, create it. 
-	TargetPhysicsAsset = DataAsset->TargetPhysicsAsset.LoadSynchronous();
-	if (!TargetPhysicsAsset)
-	{
-		if(CopyPhysicsAsset(PcActorDataAsset, false) && PcActorDataAsset->TargetPhysicsAsset.LoadSynchronous())
-		{
-			TargetPhysicsAsset = PcActorDataAsset->TargetPhysicsAsset.LoadSynchronous();
-			bPhysAssetHelperValid = true;
-		}
-		else
-		{
-			LGE("Target Physics Asset not found or created. Aborting.")
-			return false;
-		}
-	}
-	return true;
-}
-
-bool UPhysicsEditorBPLibrary::ProcessCharacterDA(UPcActorDataAsset* DataAsset, FMeshBakeOptions Options)
-{
-	CopyPhysicsAsset(DataAsset, Options.bOverwritePhysicsAsset);
-	return true;
-}
-
-bool UPhysicsEditorBPLibrary::CopyPhysicsAsset(UPcActorDataAsset* DataAsset, bool bForceCopy = false)
-{
-	if (!DataAsset)
-	{
-		LGE("No Data Asset found. Aborting.")
-		return false;
-	}
-	
-	auto TargetPhysicsAssetPtr = DataAsset->TargetPhysicsAsset;
-	UPhysicsAsset* TargetPhysicsAsset = TargetPhysicsAssetPtr.LoadSynchronous();
-	
-	if (!TargetPhysicsAsset || bForceCopy)
-	{
-		auto SourcePhysicsAssetPtr = DataAsset->SourcePhysicsAsset;
-		UPhysicsAsset* SourcePhysicsAsset = SourcePhysicsAssetPtr.LoadSynchronous();
-		if(SourcePhysicsAsset)
-		{
-			const FString TargetPath = MakeAssetPath(DataAsset->NewAssetPath,
-			                                         DataAsset->CharacterName.ToString(),
-			                                         "PA_");
-			if(!UEditorAssetLibrary::DoesAssetExist(TargetPath))
-			{
-				if (auto NewAsset = UEditorAssetLibrary::DuplicateLoadedAsset(SourcePhysicsAsset, TargetPath))
-				{
-					if(auto NewPhysicsAsset = Cast<UPhysicsAsset>(NewAsset))
-					{
-						DataAsset->TargetPhysicsAsset = TSoftObjectPtr(NewPhysicsAsset);
-						return true;
-					}
-					LGE("Physics Asset not duplicated. Aborting.")
-					return false;
-				}
-				LGE("Physics Asset not duplicated. Aborting.")
-				return false;
-			}
-			LGW("Physics Asset already exists. Returning true.")
-			return true;
-		}
-		LGE("Source Physics Asset not found. Aborting.")
-		return false;
-	}
-	LGE("Target Physics Asset already exists. Aborting.")
-	return false;
-}
-
-UDataTable* UPhysicsEditorBPLibrary::GetBodySetupsDataTable() const
-{
-	return BodyParamsDataTable;
-}
-
-TArray<FName> GetBoneNamesToAlign(UDataTable* DataTable)
-{
-	TArray<FName> OutNames;
-	FString ContextString;
-	if(DataTable)
-	{
-		auto RowNames = DataTable->GetRowNames();
-		for ( auto BodyName : RowNames )
-		{
-			FPhysAssetCreateParamsRow* Row = DataTable->FindRow<FPhysAssetCreateParamsRow>(BodyName, ContextString);
-			if(Row)
-			{
-				if (Row->GeomType == EPhysAssetFitGeomType::EFG_Sphyl)
-				{
-					OutNames.Add(Row->BoneName);
-				}
-			}
-		}
-	}
-	return OutNames;
-}
-
-bool UPhysicsEditorBPLibrary::CreatePhysicsAssetAndMorphedSkm(UPcActorDataAsset* DataAsset)
-{
-	UPhysicsEditorBPLibrary* PhysAssetHelper = NewObject<UPhysicsEditorBPLibrary>();
-	PhysAssetHelper->SetDataAsset(DataAsset);
-	if (PhysAssetHelper->bPhysAssetHelperValid)
-	{
-		PhysAssetHelper->CreatePhysicsAssetInternal();
-		return true;
-	}
-	return false;
-}
-
-bool UPhysicsEditorBPLibrary::CreatePhysicsAssetInternal()
-{
-	UUnrealEditorSubsystem* UnrealEditorSubsystem = GEditor->GetEditorSubsystem<UUnrealEditorSubsystem>();
-	
-	// Spawn skeletal mesh actor, load AnimInstance, set curve and morph values
-	if(!UnrealEditorSubsystem){
-		LGE("Editor Subsystem not found.")
-		return false; }
-	
-	UWorld* World = UnrealEditorSubsystem->GetEditorWorld();
-	ASkeletalMeshActor* MeshActor = World->SpawnActor<ASkeletalMeshActor>();
-	if(!MeshActor) {
-		LGE("SkeletalMeshActor unable to be created.")
-		return false; }
-	
-	SkelMeshComp = MeshActor->GetSkeletalMeshComponent();
-	if(!SkelMeshComp) {
-		LGE("SkeletalMeshComp unable to be created.")
-		return false; }
-
-	auto SourceSkeletalMesh = PcActorDataAsset->SourceSkeletalMesh.LoadSynchronous();
-	if(!SourceSkeletalMesh) {
-		LGE("SourceSkeletalMesh unable to be created.")
-		return false; }
-	
-	SkelMeshComp->SetSkeletalMesh(SourceSkeletalMesh);
-	SkelMeshComp->SetPhysicsAsset(TargetPhysicsAsset);
-	
-	SkelMeshComp->SetUpdateAnimationInEditor(true);
-	
-	SkelMeshComp->SetAnimInstanceClass(PcActorDataAsset->AnimBlueprintRef->GetAnimBlueprintGeneratedClass());
-	auto AnimInstance = SkelMeshComp->GetAnimInstance();
-
-	// auto AnimInstance = SkelMeshComp->GetPostProcessInstance();
-	SkelMeshComp->SetDisablePostProcessBlueprint(true);
-
-	if(!AnimInstance) {
-		LGE("PostProcessAnimInstance unable to be created.")
-		return false; }
-	AnimInstance->InitializeAnimation();
-	
-	// for(auto MorphPair : PcActorDataAsset->MorphTargetMap)
-	// {
-	// 	AnimInstance->SetMorphTarget(MorphPair.Key, MorphPair.Value);
-	// }
-	// for(auto CurvePair : PcActorDataAsset->CurveMap)
-	// {
-	// 	AnimInstance->AddCurveValue(CurvePair.Key, CurvePair.Value);
-	// }
-	if(UPcAnimInstance* PcAnimInstance = Cast<UPcAnimInstance>(AnimInstance))
-	{
-		// PcAnimInstance->SetCurveMap(PcActorDataAsset->CurveMap);
-		PcAnimInstance->CurveMap = PcActorDataAsset->CurveMap;
-		PcAnimInstance->MorphTargetMap = PcActorDataAsset->MorphTargetMap;
-	}
-	AnimInstance->RefreshCurves(SkelMeshComp);
-	AnimInstance->UpdateAnimation(.1f, false);
-	// SkelMeshComp->TickAnimation(0.1f,false);
-	SkelMeshComp->TickAnimation(0.2f,false);
-	
-	// NewSkeletalMesh = CopyMeshWithMorphs(SkelMeshComp, PcActorDataAsset);
-	// if(!NewSkeletalMesh) {
-	// 	LGE("NewSkeletalMesh unable to be created.")
-	// 	return false; }
-	// const auto RefSkeleton = NewSkeletalMesh->GetRefSkeleton();
-	// auto BoneInfos = RefSkeleton.GetRefBoneInfo();
-	// auto RefPose = RefSkeleton.GetRefBonePose();
-	// for (int i = 0; i < BoneInfos.Num() && i < RefPose.Num(); i++)
-	// {
-	// 	PcActorDataAsset->RefPoseTransforms.Add(BoneInfos[i].Name, RefPose[i]);
-	// }
-	// // UPhysicsAsset* PhysicsAsset = PcActorDataAsset->PhysicsAsset;
-	// SkelMeshComp->SetSkeletalMesh(NewSkeletalMesh);
-	// TargetPhysicsAsset->SetPreviewMesh(NewSkeletalMesh);
-	// LG("Created New Skeletal Mesh")
-	
-	FTimerDelegate TimerDelegate = FTimerDelegate::CreateUObject(this, &UPhysicsEditorBPLibrary::CreatePhysicsAssetDelayed);
-	GEditor->GetEditorSubsystem<UUnrealEditorSubsystem>()->GetEditorWorld()->GetTimerManager()
-		.SetTimer(TimerHandle, this, &UPhysicsEditorBPLibrary::CreatePhysicsAssetDelayed, 3.f, false );
-	
-	return true;
-}
-
-// bool UPhysAssetHelper::CreatePhysicsAssetDelayed(USkeletalMeshComponent* SkelMeshComp, UPcActorDataAsset* DataAsset)
-void UPhysicsEditorBPLibrary::CreatePhysicsAssetDelayed()
-{
-	NewSkeletalMesh = CopyMeshWithMorphs(SkelMeshComp, PcActorDataAsset);
-	if(!NewSkeletalMesh) {
-		LGE("NewSkeletalMesh unable to be created.")
-		return; }
-	PcActorDataAsset->TargetSkeletalMesh = NewSkeletalMesh;
-	const auto RefSkeleton = NewSkeletalMesh->GetRefSkeleton();
-	auto BoneInfos = RefSkeleton.GetRefBoneInfo();
-	auto RefPose = RefSkeleton.GetRefBonePose();
-	for (int i = 0; i < BoneInfos.Num() && i < RefPose.Num(); i++)
-	{
-		PcActorDataAsset->RefPoseTransforms.Add(BoneInfos[i].Name, RefPose[i]);
-	}
-	// UPhysicsAsset* PhysicsAsset = PcActorDataAsset->PhysicsAsset;
-	SkelMeshComp->SetSkeletalMesh(NewSkeletalMesh);
-	TargetPhysicsAsset->SetPreviewMesh(NewSkeletalMesh);
-	LG("Created New Skeletal Mesh")
-
-	LG("Saving Package")
-	UEditorAssetLibrary::SaveLoadedAssets({TargetPhysicsAsset, NewSkeletalMesh}, false);	
-
-	SkelMeshComp->DestroyComponent();
-	
-	// if (CreateBodiesFromDataTable(PcActorDataAsset->BodyParamsDataTable, PhysicsAsset, NewSkeletalMesh))
-	// {
-	// 	if (CopyTwistShapesToParents(PhysicsAsset, NewSkeletalMesh, TwistBoneNames, false))
-	// 	{
-	// 		auto BonesToAlign = GetBoneNamesToAlign(PcActorDataAsset->BodyParamsDataTable);
-	// 		if(AlignCapsulesToBones(PhysicsAsset, NewSkeletalMesh, TArray<FName>()))
-	// 		{
-	// 			LG("Aligned Capsule Bones succeeded. ")
-	// 		}
-	// 	}
-	// }
-	// else
-	// {
-	// 	
-	// }
-	return;/**/
-}
-
-USkeletalMesh* UPhysicsEditorBPLibrary::CopyMeshWithMorphs(USkeletalMeshComponent* SkeletalMeshComponent, UPcActorDataAsset* DataAsset)
-{
-	if(!SkeletalMeshComponent)
-	{
-		LGE("No SkeletalMeshComponent")
-		return nullptr;
-	}
-	UE::Geometry::FDynamicMesh3 DynamicMesh;
-	FTransform OutTransform;
-	FText OutErrorMsg;
-	UE::Conversion::FToMeshOptions Options = UE::Conversion::FToMeshOptions();
-
-	// SetRefPoseOverride(SkeletalMeshComponent, TArray<FTransform>());
-	
-	// Copy the mesh from the SkeletalMeshComponent to the DynamicMesh
-	UE::Conversion::SceneComponentToDynamicMesh(SkeletalMeshComponent, Options, false, DynamicMesh, OutTransform, OutErrorMsg);
-	
-	USkeleton* Skeleton = SkeletalMeshComponent->GetSkeletalMeshAsset()->GetSkeleton();
-	FReferenceSkeleton RefSkeleton = SkeletalMeshComponent->GetSkeletalMeshAsset()->GetRefSkeleton();
-	// auto AnimInstance = SkeletalMeshComponent->GetPostProcessInstance();
-	auto AnimInstance = SkeletalMeshComponent->GetAnimInstance();
-
-	
-	if(AnimInstance)
-	{
-		FReferenceSkeletonModifier RefSkelModifier = FReferenceSkeletonModifier(RefSkeleton, Skeleton);
-		AnimInstance->SavePoseSnapshot(FName("MorphedPose"));
-		const FPoseSnapshot* Snapshot = AnimInstance->GetPoseSnapshot(FName("MorphedPose"));
-		for(int i = 0; i < RefSkeleton.GetNum(); i++)
-		{
-			LG("Ori Transform %s: %s", *SkeletalMeshComponent->GetBoneName(i).ToString(), *RefSkeleton.GetRefBonePose()[i].ToString())
-			LG("New Transform %s: %s", *SkeletalMeshComponent->GetBoneName(i).ToString(), *SkeletalMeshComponent->GetBoneSpaceTransforms()[i].ToString())
-			if(Snapshot)
-			{
-				RefSkelModifier.UpdateRefPoseTransform(i, Snapshot->LocalTransforms[i]);
-				LG("Sna Transform %s: %s", *SkeletalMeshComponent->GetBoneName(i).ToString(), *Snapshot->LocalTransforms[i].ToString())
-			}
-			else
-				LGW("No snapshot.")
-		}
-	}
-
-	UE::AssetUtils::FSkeletalMeshResults Results;
-	UE::AssetUtils::FSkeletalMeshAssetOptions AssetOptions = UE::AssetUtils::FSkeletalMeshAssetOptions();
-	AssetOptions.SourceMeshes.DynamicMeshes.Add(&DynamicMesh);
-	AssetOptions.Skeleton = Skeleton;
-	// AssetOptions.AssetMaterials = SkeletalMeshComponent->GetMaterials();
-	AssetOptions.NumMaterialSlots = SkeletalMeshComponent->GetMaterials().Num();
-	AssetOptions.RefSkeleton = &RefSkeleton;
-	AssetOptions.NewAssetPath = MakeAssetPath(DataAsset->NewAssetPath, DataAsset->CharacterName.ToString(), "SKM_"); 
-	
-	UE::AssetUtils::CreateSkeletalMeshAsset(AssetOptions, Results);
-	FString Result = Results.SkeletalMesh ? "Success" : "Failure";
-	LG("Results: %s", *Result)
-	return Results.SkeletalMesh;
-}
-
+#undef LOG_CAT
+#define LOG_CAT LogPhysicsEditor
 
 bool UPhysicsEditorBPLibrary::SetRefPoseOverride(USkeletalMeshComponent* SkeletalMeshComponent, TArray<FTransform> NewRefPoseTransforms)
 // const TArray<FTransform>& NewRefPoseTransforms)
@@ -364,85 +49,6 @@ bool UPhysicsEditorBPLibrary::SetRefPoseOverride(USkeletalMeshComponent* Skeleta
 		return true;
 	}
 	return false;
-}
-
-bool UPhysicsEditorBPLibrary::CreateBodiesFromDataTable(UPcActorDataAsset* DataAsset)
-{
-	UDataTable* DataTable = DataAsset->BodyParamsDataTable.LoadSynchronous();
-	if(!DataTable) {
-		LGE("ERROR: DataTable not found. Aborting.");
-		return false; }
-	
-	UPhysicsAsset* PhysicsAsset = DataAsset->TargetPhysicsAsset.LoadSynchronous();
-	if(!PhysicsAsset) {
-		LGE("ERROR: Target PhysicsAsset not found. Aborting.");
-		return false; }
-	
-	USkeletalMesh* SkeletalMesh = DataAsset->TargetSkeletalMesh.LoadSynchronous();
-	if(!SkeletalMesh) {
-		LGE("ERROR: Target Skeletal Mesh not found. Aborting.");
-		return false; }
-	PhysicsAsset->SetPreviewMesh(SkeletalMesh);
-	
-	TArray<FPhysAssetCreateParamsRow> Rows;
-	FString ContextString;
-	TArray<FName> RowNames = DataTable->GetRowNames();
-
-	IMeshUtilities& MeshUtilities = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>("MeshUtilities");
-	TArray<FBoneVertInfo> Infos = TArray<FBoneVertInfo>();
-	MeshUtilities.CalcBoneVertInfos(SkeletalMesh, Infos, true);
-
-	FScopedSlowTask CreateBodiesTask = FScopedSlowTask(RowNames.Num(), NSLOCTEXT("CreateBodiesTask", "CreateBodies", "Adding Bodies..."));
-	CreateBodiesTask.MakeDialog(true, true);
-	
-	for ( auto& BodyName : RowNames )
-	{
-		FText TaskText = FText::FromString(FString::Format(TEXT("Making body for bone {0}"), {BodyName.ToString()}));
-		CreateBodiesTask.EnterProgressFrame(1, TaskText);
-		
-		FPhysAssetCreateParamsRow* Row = DataTable->FindRow<FPhysAssetCreateParamsRow>(BodyName, ContextString);
-		if ( Row )
-		{
-			int BodyIndex = PhysicsAsset->FindBodyIndex(BodyName);
-			if (BodyIndex == INDEX_NONE)
-			{
-				LGW("Body %s not found on PhysicsAsset, trying to create it", *BodyName.ToString());
-				TObjectPtr<USkeletalBodySetup> BodySetup = NewObject<USkeletalBodySetup>();
-				BodySetup->BoneName = BodyName;
-				PhysicsAsset->SkeletalBodySetups.Add(BodySetup);
-				PhysicsAsset->UpdateBodySetupIndexMap();
-				PhysicsAsset->UpdateBoundsBodiesArray();
-
-				// Ensure it was added
-				BodyIndex = PhysicsAsset->FindBodyIndex(BodyName);
-				if (BodyIndex == INDEX_NONE) { LGW("Body %s not able to be created on PhysicsAsset", *BodyName.ToString());
-					continue; }
-			}
-			
-			FPhysAssetCreateParams CreateParams = Row->GetCreateParams();
-			USkeletalBodySetup* BodySetup = PhysicsAsset->SkeletalBodySetups[BodyIndex];
-			FName BoneName = BodySetup->BoneName;
-			int BoneIndex = SkeletalMesh->GetRefSkeleton().FindBoneIndex(BoneName);
-			if(BoneIndex == INDEX_NONE) { LGW("Bone %s not found on Skeleton. Skipping this body.", *BodyName.ToString());
-				continue;
-			}	
-			LG("Creating collision from bone %s", *BodyName.ToString());
-			FPhysicsAssetUtils::CreateCollisionFromBone(BodySetup, SkeletalMesh, BoneIndex, CreateParams, Infos[BoneIndex]);
-
-			if(CreateParams.GeomType == EFG_Sphyl)
-			{
-				DataAsset->CapsuleNames.Add(BodyName);	
-			}
-		}
-	}
-	
-	PhysicsAsset->UpdateBodySetupIndexMap();
-	PhysicsAsset->UpdateBoundsBodiesArray();
-
-	UEditorAssetLibrary::SaveLoadedAsset(PhysicsAsset, false);
-	
-	return true;
-	
 }
 
 bool UPhysicsEditorBPLibrary::FixConstraintScale(UPhysicsAsset* PhysicsAsset)
@@ -471,291 +77,6 @@ bool UPhysicsEditorBPLibrary::FixConstraintScale(UPhysicsAsset* PhysicsAsset)
 	return true;
 }
 
-bool UPhysicsEditorBPLibrary::AlignCapsulesToBones(UPcActorDataAsset* DataAsset)
-{
-	LG("Aligning capsules to bones.")
-	
-	if(!DataAsset) {
-		LGE("ERROR: Data Asset not found. Aborting.");
-		return false; }
-	
-	UPhysicsAsset* PhysicsAsset = DataAsset->TargetPhysicsAsset.LoadSynchronous();
-	if(!PhysicsAsset) {
-		LGE("ERROR: Target PhysicsAsset not found. Aborting.");
-		return false; }
-	
-	USkeletalMesh* SkeletalMesh = DataAsset->TargetSkeletalMesh.LoadSynchronous();
-	if(!SkeletalMesh) {
-		LGE("ERROR: Target SkeletalMesh not found. Aborting.");
-		return false; }
-	
-	if(DataAsset->CapsuleNames.Num() == 0)
-	{
-		// TODO: find capsule bones from PhysicsAsset
-		LGE("ERROR: No Capsule Names found. Aborting.");
-	}
-	
-	TArray<FBoneVertInfo> Infos = TArray<FBoneVertInfo>();
-	IMeshUtilities& MeshUtilities = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>("MeshUtilities");
-	MeshUtilities.CalcBoneVertInfos(SkeletalMesh, Infos, true);
-	for(const auto Name : DataAsset->CapsuleNames)
-	{
-		AlignCapsule(PhysicsAsset, SkeletalMesh, Name, Infos);
-	}
-	
-	return true;
-}
-
-bool UPhysicsEditorBPLibrary::CopyTwistShapesToParents(UPcActorDataAsset* DataAsset, bool bDeleteChildBodies = false)
-{
-	LG("Copying Twist bones to parents.")
-
-	if(!DataAsset) {
-		LGE("ERROR: Data Asset not found. Aborting.");
-		return false; }
-	
-	UPhysicsAsset* PhysicsAsset = DataAsset->TargetPhysicsAsset.LoadSynchronous();
-	if(!PhysicsAsset) {
-		LGE("ERROR: Target PhysicsAsset not found. Aborting.");
-		return false; }
-	
-	USkeletalMesh* SkeletalMesh = DataAsset->TargetSkeletalMesh.LoadSynchronous();
-	if(!SkeletalMesh) {
-		LGE("ERROR: Target Skeletal Mesh not found. Aborting.");
-		return false; }
-	
-	if(DataAsset->TwistNames.Num() == 0)
-	{
-		DataAsset->TwistNames = TwistBoneNames;
-	}
-	for(FName BoneName : DataAsset->TwistNames)
-	{
-		LG("Copying twist shape from %s", *BoneName.ToString())
-		CopyTwistShapeToParent(PhysicsAsset, SkeletalMesh, BoneName, bDeleteChildBodies);
-	}
-	if(bDeleteChildBodies)
-	{
-		for(int i = PhysicsAsset->SkeletalBodySetups.Num() - 1; i >= 0; i--)
-		{
-			if (DataAsset->TwistNames.Contains(PhysicsAsset->SkeletalBodySetups[i]->BoneName))
-			{
-				LG("Deleting body %s from Physics Asset", *PhysicsAsset->SkeletalBodySetups[i]->BoneName.ToString())
-				PhysicsAsset->SkeletalBodySetups.RemoveAt(i);
-			}
-		}
-		PhysicsAsset->UpdateBodySetupIndexMap();
-		PhysicsAsset->UpdateBoundsBodiesArray();
-	}
-	
-	return true;
-}
-
-bool UPhysicsEditorBPLibrary::CopyTwistShapeToParent(UPhysicsAsset* PhysicsAsset, USkeletalMesh* SkeletalMesh,
-                                              FName BodyName, bool bDeleteChildBody = false)
-{
-	FReferenceSkeleton RefSkeleton = SkeletalMesh->GetRefSkeleton();
-	auto RefBonePose = RefSkeleton.GetRefBonePose();
-	int BodyIndex = PhysicsAsset->FindBodyIndex(BodyName);
-	if (BodyIndex == INDEX_NONE) {
-		LG("BodyName %s can't be found in Physics Asset. Aborting.", *BodyName.ToString());
-		return false;
-	}
-	int BoneIndex = RefSkeleton.FindBoneIndex(BodyName);
-	if (BoneIndex == INDEX_NONE) {
-		LG("BodyName %s can't be found on skeletal mesh. Aborting.", *BodyName.ToString());
-		return false;
-	}
-	int ParentBoneIndex = RefSkeleton.GetParentIndex(BoneIndex);
-	if (ParentBoneIndex == INDEX_NONE) {
-		LG("Body %s's parent can't be found on skeletal mesh. Aborting.", *BodyName.ToString());
-		return false;
-	}
-	FName ParentBoneName = RefSkeleton.GetBoneName(ParentBoneIndex);
-	int ParentBodyIndex = PhysicsAsset->FindBodyIndex(ParentBoneName);
-	if (ParentBodyIndex == INDEX_NONE) {
-		LG("Body %s's parent can't be found on Physics Asset. Aborting.", *BodyName.ToString());
-		return false;
-	}
-	FTransform BoneTransform = RefBonePose[BoneIndex];
-	FTransform ParentBoneTransform = RefBonePose[ParentBoneIndex];
-
-	USkeletalBodySetup* Body = PhysicsAsset->SkeletalBodySetups[BodyIndex];
-	USkeletalBodySetup* ParentBody = PhysicsAsset->SkeletalBodySetups[ParentBodyIndex];
-
-	FKAggregateGeom* AggGeom = &Body->AggGeom;
-	FKAggregateGeom* ParentAggGeom = &ParentBody->AggGeom;
-	
-	if (AggGeom->ConvexElems.IsValidIndex(0)) {
-		FKConvexElem Shape = AggGeom->ConvexElems[0];
-		FKConvexElem NewShape = FKConvexElem(Shape);
-
-		// FTransform ShapeLocal = Shape.GetTransform();
-		// FTransform ShapeWorld = ShapeLocal * BoneTransform;
-		// FTransform ShapeLocalParent = ShapeWorld * ParentBoneTransform.Inverse();
-		// NewShape.SetTransform(ShapeLocalParent);
-		// NewShape.SetTransform(BoneTransform);
-
-		//ParentAggGeom->ConvexElems.Add(NewShape);
-		ParentBody->AddCollisionElemFrom(*AggGeom, EAggCollisionShape::Convex, 0);
-		//ParentBody->AddCollisionFrom(*AggGeom);
-		// ParentAggGeom->ConvexElems.Last().SetTransform(ShapeLocalParent);
-		ParentAggGeom->ConvexElems.Last().SetTransform(BoneTransform);
-		ParentBody->CreatePhysicsMeshes();
-		return true;
-	}
-	else {
-		LGW("No convex elements found on body %s. Aborting.", *BodyName.ToString());
-		return false;
-	}
-}
-
-bool UPhysicsEditorBPLibrary::AlignCapsuleToBone(UPhysicsAsset* PhysicsAsset, USkeletalMesh* SkeletalMesh,
-                                          FName BodyName)
-{
-	TArray<FBoneVertInfo> Infos = TArray<FBoneVertInfo>();
-	IMeshUtilities& MeshUtilities = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>("MeshUtilities");
-	MeshUtilities.CalcBoneVertInfos(SkeletalMesh, Infos, true);
-
-	return AlignCapsule(PhysicsAsset, SkeletalMesh, BodyName, Infos);
-}
-
-bool UPhysicsEditorBPLibrary::AlignCapsule(UPhysicsAsset* PhysicsAsset, USkeletalMesh* SkeletalMesh, FName BodyName,
-                                    TArray<FBoneVertInfo> Infos)
-{
-	const float	MinPrimSize = 0.5f;
-	float Distance = 0.f;
-	FKSphylElem Capsule;
-	FTransform BoneTransform, OtherTransform;
-
-	FReferenceSkeleton RefSkeleton = SkeletalMesh->GetRefSkeleton();
-	int32 BodyIndex = PhysicsAsset->FindBodyIndex(BodyName);
-	if (BodyIndex == INDEX_NONE) {
-		LGW("BodyName %s can't be found in Physics Asset. Aborting.", *BodyName.ToString());
-		return false;
-	}
-	USkeletalBodySetup* Body = PhysicsAsset->SkeletalBodySetups[BodyIndex];
-
-	FName BoneName = Body->BoneName;
-	int32 BoneIndex = RefSkeleton.FindBoneIndex(BoneName);
-	if (BoneIndex == INDEX_NONE) {
-		LGW("BodyName %s can't be found on skeletal mesh. Aborting.", *BodyName.ToString());
-		return false;
-	}
-	FBoneVertInfo Info = Infos[BoneIndex];
-
-	
-	BoneTransform = RefSkeleton.GetRefBonePose()[BoneIndex];
-	LGW("Body %s, Distance: %f", *BodyName.ToString(), Distance);
-
-
-	/***********************************|***|***|***|****|*****|** 
-	* Copied from PhysicsAssetUtils.cpp |   |   |   |    |     |
-	************************************v***v***v***v****v*****v**/
-	FMatrix ElemTM = FMatrix::Identity;
-	bool ComputeFromVerts = false;
-
-	if (true)
-	{
-		// Compute covariance matrix for verts of this bone
-		// Then use axis with largest variance for orienting bone box
-		const FMatrix CovarianceMatrix = ComputeCovarianceMatrix(Info);
-		FVector ZAxis = ComputeEigenVector(CovarianceMatrix);
-		FVector XAxis, YAxis;
-		ZAxis.FindBestAxisVectors(YAxis, XAxis); 
-		ElemTM = FMatrix(XAxis, YAxis, ZAxis, FVector::ZeroVector);
-	}
-
-	FTransform ElemTransform(ElemTM);
-
-	FBox BoneBox(ForceInit);
-	for (int32 j = 0; j < Info.Positions.Num(); j++)
-	{
-		BoneBox += ElemTransform.InverseTransformPosition((FVector)Info.Positions[j]);
-	}
-
-	FVector BoxCenter(0, 0, 0), BoxExtent(0, 0, 0);
-
-	FBox TransformedBox = BoneBox;
-	if (BoneBox.IsValid)
-	{
-		// make sure to apply scale to the box size
-		FMatrix BoneMatrix = SkeletalMesh->GetComposedRefPoseMatrix(BoneIndex);
-		TransformedBox = BoneBox.TransformBy(FTransform(BoneMatrix));
-		BoneBox.GetCenterAndExtents(BoxCenter, BoxExtent);
-	}
-
-
-	LG("Body %s, Center: %s", *BodyName.ToString(), *BoxCenter.ToCompactString());
-	LG("Body %s, BoxExtent: %s", *BodyName.ToString(), *BoxExtent.ToCompactString());
-
-	float MinRad = TransformedBox.GetExtent().GetMin();
-	float MinAllowedSize = MinPrimSize;
-
-
-	// If the primitive is going to be too small - just use some default numbers and let the user tweak.
-	if (MinRad < MinAllowedSize)
-	{
-		// change min allowed size to be min, not DefaultPrimSize
-		BoxExtent = FVector(MinAllowedSize, MinAllowedSize, MinAllowedSize);
-	}
-
-	FVector BoneOrigin = BoneTransform.TransformPosition(BoxCenter);
-	//BoneTransform.SetTranslation(BoneOrigin);
-
-	if (BoxExtent.X > BoxExtent.Z && BoxExtent.X > BoxExtent.Y) {
-		//X is the biggest so we must rotate X-axis into Z-axis
-		//Capsule.SetTransform(FTransform(FQuat(FVector(0, 1, 0), -PI * 0.5f)) * BoneTransform);
-		Capsule.Radius = FMath::Min(BoxExtent.Y, BoxExtent.Z) * 1.01f;
-		//Capsule.Length = Distance;// BoxExtent.X * 1.01f;
-
-	} else if (BoxExtent.Y > BoxExtent.Z && BoxExtent.Y > BoxExtent.X) {
-		//Y is the biggest so we must rotate Y-axis into Z-axis
-		//Capsule.SetTransform(FTransform(FQuat(FVector(1, 0, 0), PI * 0.5f)) * BoneTransform);
-		//Capsule.Radius = FMath::Max(BoxExtent.X, BoxExtent.Z) * 1.01f;
-		Capsule.Radius = FMath::Min(BoxExtent.X, BoxExtent.Z) * 1.01f;
-		//Capsule.Length = Distance;// BoxExtent.Y * 1.01f;
-	} else {
-		//Z is the biggest so use transform as is
-		//Capsule.SetTransform(BoneTransform);
-
-		Capsule.Radius = FMath::Min(BoxExtent.X, BoxExtent.Y) * 1.01f;
-		//Capsule.Length =  Distance;//BoxExtent.Z * 1.01f;
-	}
-
-
-	if (true) {
-		//UE_LOG(LogCore, Warning, "Body {}, tranlation: {}", BodyName, BoneTransform.GetLocation());
-		FVector BoneLocation = BoneTransform.GetTranslation();
-		//UE_LOGFMT(LogCore, Warning, "Body {name}, Location: {vector}", BodyName, BoneLocation.ToCompactString());
-		TArray<int32> ChildIndices = TArray<int32>();
-		if (RefSkeleton.GetDirectChildBones(BoneIndex, ChildIndices)) {
-			OtherTransform = RefSkeleton.GetRefBonePose()[ChildIndices[0]];
-			Distance = FVector::Dist(BoneLocation, OtherTransform.GetTranslation());
-		}
-		else {
-			OtherTransform = RefSkeleton.GetRefBonePose()[RefSkeleton.GetParentIndex(BoneIndex)];
-			//UE_LOGFMT(LogCore, Warning, "Other Transform, Location: {vector}", OtherTransform.GetTranslation().ToCompactString());
-			Distance = FVector::Dist(BoneLocation, OtherTransform.GetTranslation()) * 2 / 3;
-		}
-		Capsule.Length = Distance;
-	}
-
-	Capsule.SetTransform(BoneTransform);
-	float xDisplacement = BodyName.ToString().EndsWith("r") ? (-Distance / 2) : Distance / 2;
-	Capsule.Center = FVector(xDisplacement, 0, 0);
-	//Capsule.Radius = Distance *  .3;
-	Capsule.Rotation = FRotator(90, 0, 0);
-
-	FKAggregateGeom* AggGeom = &Body->AggGeom;
-	if (AggGeom->SphylElems.IsValidIndex(0))\
-		AggGeom->SphylElems[0] = Capsule;
-	else {
-		AggGeom->SphylElems.Add(Capsule);
-	}
-	
-
-	return true;
-}
 
 bool UPhysicsEditorBPLibrary::AlignConstraint(USkeletalMeshComponent* SkelMesh, int32 ConstraintIndex,
 	float PositionBlend, float OrientationBlend)
@@ -816,25 +137,27 @@ USkeletalMeshComponent* UPhysicsEditorBPLibrary::GetSkelMeshComponent(FPersonaAs
 	return nullptr;
 }
 
-bool UPhysicsEditorBPLibrary::AdjustConstraints(USkeletalMeshComponent* SkelMeshComp, FAdjustConstraintOptions Options)
+bool UPhysicsEditorBPLibrary::AdjustConstraints(USkeletalMeshComponent* SkelMeshComp, FAdjustConstraintsOptions Options,
+                                                TArray<FName> JointNames = TArray<FName>())
 {
-	FRegexPattern ParentPattern = FRegexPattern(Options.MatchParentBodyRegex);	
-	FRegexPattern ChildPattern = FRegexPattern(Options.MatchChildBodyRegex);	
+	
 	if(UPhysicsAsset* PhysicsAsset = SkelMeshComp->GetPhysicsAsset())
 	{
-		// TArray<FConstraintInstanceAccessor> Constraints;
-		// PhysicsAsset->GetConstraints(false, Constraints);
+		if(JointNames.IsEmpty())
+		{
+			PhysicsAsset->BodySetupIndexMap.GetKeys(JointNames);
+			JointNames = FilterNames(JointNames, Options.MatchChildBodyRegex);
+		}
 		for(int i = 0; auto ConstraintTemplate : PhysicsAsset->ConstraintSetup)
 		{
 			if(!ConstraintTemplate)
 				continue;
 			auto Constraint = ConstraintTemplate->DefaultInstance;
 			{
-				if(RegexMatch(ChildPattern, Constraint.ConstraintBone1.ToString())
-					&& RegexMatch(ParentPattern, Constraint.ConstraintBone2.ToString()))
+				if(JointNames.Contains(Constraint.JointName))
 				{
-					auto ConstraintAccessor = FConstraintInstanceAccessor(SkelMeshComp, i);	
-					AlignConstraint(SkelMeshComp, i, Options.PositionAlpha, 0.f);
+					LG("    Adjusting Constraint: %s", *Constraint.JointName.ToString())	
+					AlignConstraint(SkelMeshComp, i, Options.PositionRatio, 0.f);
 				}
 			}
 			i++;
@@ -845,10 +168,8 @@ bool UPhysicsEditorBPLibrary::AdjustConstraints(USkeletalMeshComponent* SkelMesh
 	return false;
 }
 
-bool UPhysicsEditorBPLibrary::AdjustBreastPointBody(USkeletalMeshComponent* SkelMeshComp, FAdjustBodiesOptions Options, FName BodyName)
+bool UPhysicsEditorBPLibrary::AdjustPointBody(USkeletalMeshComponent* SkelMeshComp, FAdjustBodiesOptions Options, FName BodyName)
 {
-	float PositionAlpha = .35f;
-	float RadiusFactor = .45f;
 	if(auto PhysicsAsset = SkelMeshComp->GetPhysicsAsset())
 	{
 		if(int* BodyIndex = PhysicsAsset->BodySetupIndexMap.Find(BodyName))
@@ -862,10 +183,12 @@ bool UPhysicsEditorBPLibrary::AdjustBreastPointBody(USkeletalMeshComponent* Skel
 				float Distance = FVector::Dist(BoneXform.GetLocation(), ParentXform.GetLocation());
 				if (!BodySetup->AggGeom.SphereElems.IsValidIndex(0))
 					BodySetup->AggGeom.SphereElems.Add(FKSphereElem());
-				FVector PosFinal = FMath::Lerp(BoneXform.GetLocation(), ParentXform.GetLocation(), PositionAlpha);
+				FVector PosFinal = FMath::Lerp(BoneXform.GetLocation(), ParentXform.GetLocation(), Options.PositionRatio);
 				// BodySetup->AggGeom.SphereElems[0].Center = BoneXform.GetRelativeTransform(FTransform(PosFinal)).GetLocation() * -1.f;
 				BodySetup->AggGeom.SphereElems[0].Center = BoneXform.InverseTransformPosition(PosFinal);
-				BodySetup->AggGeom.SphereElems[0].Radius = RadiusFactor * Distance;
+				BodySetup->AggGeom.SphereElems[0].Radius = Options.RadiusRatio * Distance;
+				LG("     %s: %s -> %s = %s", *BodyName.ToString(), *BoneXform.GetLocation().ToCompactString(),
+				   *PosFinal.ToCompactString(), *BoneXform.InverseTransformPosition(PosFinal).ToCompactString())
 				return true;
 			}
 		}
@@ -873,23 +196,24 @@ bool UPhysicsEditorBPLibrary::AdjustBreastPointBody(USkeletalMeshComponent* Skel
 	return false;
 }
 
-bool UPhysicsEditorBPLibrary::AdjustBodies(USkeletalMeshComponent* SkelMeshComp, FAdjustBodiesOptions Options)
+bool UPhysicsEditorBPLibrary::AdjustBodies(USkeletalMeshComponent* SkelMeshComp, FAdjustBodiesOptions Options,
+                                           TArray<FName> BodyNames = TArray<FName>())
 {
-	FRegexPattern BodyPattern = FRegexPattern(Options.MatchBodyRegex);	
 	if(UPhysicsAsset* PhysicsAsset = SkelMeshComp->GetPhysicsAsset())
 	{
-		int i = 0;
-		TArray<FName> BodyNames;
-		PhysicsAsset->BodySetupIndexMap.GetKeys(BodyNames);
+		
+		if(BodyNames.IsEmpty())
+		{
+			PhysicsAsset->BodySetupIndexMap.GetKeys(BodyNames);
+			BodyNames = FilterNames(BodyNames, Options.MatchBodyRegex);
+		}
 		for(auto BodyName : BodyNames)
 		{
-			if(RegexMatch(BodyPattern, BodyName.ToString()))
-			{
-				AdjustBreastPointBody(SkelMeshComp, Options, BodyName);
-			}
-			i++;
+			LG("    Adjusting Body: %s", *BodyName.ToString())	
+			AdjustPointBody(SkelMeshComp, Options, BodyName);
 		}
-		UEditorAssetLibrary::SaveLoadedAsset(PhysicsAsset, false);
+		PhysicsAsset->MarkPackageDirty();
+		// UEditorAssetLibrary::SaveLoadedAsset(PhysicsAsset, false);
 		return true;
 	}
 	return false;
@@ -920,24 +244,209 @@ USkeletalMeshComponent* UPhysicsEditorBPLibrary::FocusOrOpenPhysAssetEditor(UPhy
 	return nullptr;
 }
 
-bool UPhysicsEditorBPLibrary::AddBreastPointConstraints(USkeletalMeshComponent* SkelMeshComp, FAddConstraintsOptions Options)
+bool UPhysicsEditorBPLibrary::ApplyConstraintParams(UPhysicsAsset* PhysicsAsset, FConstraintParams Params)
 {
-	return AddBreastPointRingConstraints(SkelMeshComp, Options);	
+		int32 Index = PhysicsAsset->FindConstraintIndex(Params.JointName);
+		if(Index != INDEX_NONE)
+		{
+			auto Constraint = PhysicsAsset->ConstraintSetup[Index];
+			float Mass = 0.f;
+			int BodyIndex = PhysicsAsset->FindBodyIndex(Params.ConstraintBone1);
+			if(BodyIndex != INDEX_NONE)
+			{
+				Mass = PhysicsAsset->SkeletalBodySetups[BodyIndex]->CalculateMass();
+			}
+			if( EnumHasAnyFlags(Params.ConstraintOverwrite, EConstraintOverwrite::RefFrames))
+			{
+				Constraint->DefaultInstance.SetRefFrame(EConstraintFrame::Frame1, Params.RefFrameNoScale1);
+				Constraint->DefaultInstance.SetRefFrame(EConstraintFrame::Frame2, Params.RefFrameNoScale2);
+			}
+			if( EnumHasAnyFlags(Params.ConstraintOverwrite, EConstraintOverwrite::LinearLimits))
+			{
+				Constraint->DefaultInstance.SetLinearLimits(Params.LinearLimitedX, Params.LinearLimitedY,
+															Params.LinearLimitedZ, Params.LinearLimit);
+			}
+			if( EnumHasAnyFlags(Params.ConstraintOverwrite, EConstraintOverwrite::LinearDrive))
+			{
+				float LinearStrength = (Params.LinearStrengthMassMultiplier > 0.f && Mass > 0.f)
+					? Params.LinearStrengthMassMultiplier * Mass
+					: Params.LinearStrength;
+				Constraint->DefaultInstance.SetLinearDriveParams(LinearStrength, LinearStrength * Params.LinearDampingRatio, 0.f);
+				Constraint->DefaultInstance.SetLinearPositionDrive(LinearStrength > 0.f,LinearStrength > 0.f,LinearStrength > 0.f);
+				Constraint->DefaultInstance.SetLinearVelocityDrive(LinearStrength > 0.f,LinearStrength > 0.f,LinearStrength > 0.f);
+				Constraint->DefaultInstance.SetLinearPositionTarget(Params.LinearTarget);
+			}
+			if( EnumHasAnyFlags(Params.ConstraintOverwrite, EConstraintOverwrite::AngularDrive))
+			{
+				Constraint->DefaultInstance.SetAngularTwistLimit(Params.TwistLimited, Params.TwistLimit);
+				Constraint->DefaultInstance.SetAngularSwing1Limit(Params.Swing1Limited, Params.Swing1Limit);
+				Constraint->DefaultInstance.SetAngularSwing2Limit(Params.Swing2Limited, Params.Swing2Limit);
+			}
+			if( EnumHasAnyFlags(Params.ConstraintOverwrite, EConstraintOverwrite::AngularDrive))
+			{
+				float AngularStrength = (Params.AngularStrengthMassMultiplier > 0.f && Mass > 0.f)
+					? Params.AngularStrengthMassMultiplier * Mass
+					: Params.AngularStrength;
+				Constraint->DefaultInstance.SetAngularDriveParams(AngularStrength, AngularStrength * Params.AngularDampingRatio, 0.f);
+				Constraint->DefaultInstance.SetAngularOrientationTarget(Params.AngularTarget.Quaternion());
+				Constraint->DefaultInstance.SetAngularDriveMode(Params.bSlerp ? EAngularDriveMode::SLERP : EAngularDriveMode::TwistAndSwing);
+			}
+			return true;
+		}
+	LGE("Constraint %s not found", *Params.JointName.ToString())
+	return false;
+}
+
+bool UPhysicsEditorBPLibrary::ApplyAllConstraintOptions(UPhysicsAsset* PhysicsAsset, FPhatConstraintOptions Options)
+{
+	for (auto ConstraintParams : Options.AllConstraintParams)
+	{
+		int32 Index = MakeNewConstraint(PhysicsAsset, ConstraintParams);
+		if(Index != INDEX_NONE)
+		{
+			ApplyConstraintParams(PhysicsAsset, ConstraintParams);
+		}
+	}
+	return true;
 }
 
 
-FName UPhysicsEditorBPLibrary::MakeConstraintNameBreastRing(int n, int side, int ring, int point)
+
+bool UPhysicsEditorBPLibrary::GetConstraintParams(UPhysicsAsset* PhysicsAsset, int32 ConstraintIndex, FConstraintParams& OutParams)
 {
-	char buffer2[40];
-	sprintf_s(buffer2, "breast_ring_%02d_%02d_%02d_%c",ring+1, point+1, ((point+1)%n) + 1, side == 0 ? 'l' : 'r');
-	return FName(buffer2);
+	if(PhysicsAsset && ConstraintIndex < PhysicsAsset->ConstraintSetup.Num())
+	{
+		float _;
+		const auto Constraint = PhysicsAsset->ConstraintSetup[ConstraintIndex];
+
+		int BodyIndex = PhysicsAsset->FindBodyIndex(Constraint->DefaultInstance.ConstraintBone1);
+		float Mass = PhysicsAsset->SkeletalBodySetups[BodyIndex]->CalculateMass();
+		
+		OutParams.RefFrameNoScale1 = Constraint->DefaultInstance.GetRefFrame(EConstraintFrame::Frame1);
+		OutParams.RefFrameNoScale2 = Constraint->DefaultInstance.GetRefFrame(EConstraintFrame::Frame2);
+		
+		OutParams.LinearLimitedX  = Constraint->DefaultInstance.GetLinearXMotion();
+		OutParams.LinearLimitedY  = Constraint->DefaultInstance.GetLinearYMotion();
+		OutParams.LinearLimitedZ  = Constraint->DefaultInstance.GetLinearZMotion();
+		OutParams.LinearLimit = Constraint->DefaultInstance.GetLinearLimit();
+		Constraint->DefaultInstance.GetLinearDriveParams(OutParams.LinearStrength, _, _);
+		OutParams.LinearStrengthMassMultiplier = OutParams.LinearStrength / Mass;
+		OutParams.LinearTarget = Constraint->DefaultInstance.GetLinearPositionTarget();
+		
+		Constraint->DefaultInstance.GetAngularDriveParams(OutParams.AngularStrength, _, _);
+		OutParams.AngularStrengthMassMultiplier = OutParams.AngularStrength / Mass;
+		OutParams.AngularTarget = Constraint->DefaultInstance.GetAngularOrientationTarget();
+		OutParams.bSlerp = Constraint->DefaultInstance.GetAngularDriveMode() == EAngularDriveMode::SLERP;
+		OutParams.TwistLimited = Constraint->DefaultInstance.GetAngularTwistMotion();
+		OutParams.TwistLimit = Constraint->DefaultInstance.GetAngularTwistLimit();
+		OutParams.Swing1Limited = Constraint->DefaultInstance.GetAngularSwing1Motion();
+		OutParams.Swing1Limit = Constraint->DefaultInstance.GetAngularSwing1Limit();
+		OutParams.Swing2Limited = Constraint->DefaultInstance.GetAngularSwing2Motion();
+		OutParams.Swing2Limit = Constraint->DefaultInstance.GetAngularSwing2Limit();
+		
+		return true;
+	}
+	return false;
 }
 
-FName UPhysicsEditorBPLibrary::MakeConstraintNameBreastUp(int side, int ring, int point) 
+bool UPhysicsEditorBPLibrary::GetAllConstraintParams(UPhysicsAsset* PhysicsAsset, TArray<FConstraintParams>& OutParams,
+	TArray<FName> ConstraintNames = TArray<FName>())
 {
-	char buffer2[40];
-	sprintf_s(buffer2, "breast_up_%02d_%02d_%c",ring+1, point+1, side == 0 ? 'l' : 'r');
-	return FName(buffer2);
+	bool bAll = !ConstraintNames.IsEmpty();
+	for(int i=0;i<ConstraintNames.Num();i++)
+	{
+		auto Constraint = PhysicsAsset->ConstraintSetup[i];
+		if(bAll || ConstraintNames.Contains(Constraint->DefaultInstance.JointName))
+		{
+			FConstraintParams Param;
+			if(GetConstraintParams(PhysicsAsset, i, Param))
+			{
+				OutParams.Add(Param);
+			}
+		}
+	}
+	return (!OutParams.IsEmpty());
+}
+
+
+// TArray<FConstraintParams>& UPhysicsEditorBPLibrary::SelectConstraints(UPhysicsAsset* PhysicsAsset, TArray<FConstraintParams>& Options)
+
+bool UPhysicsEditorBPLibrary::ScaleConstraintsByMass(UPhysicsAsset* PhysicsAsset, FPhatConstraintOptions& PhatConstraintOptions,
+                                                     TArray<FName> ConstraintNames, float ScaleFactor = .025f)
+{
+	// for(auto Option : Options)
+	// for(int i=0; i<Options.Num(); i++)
+	for(auto Name : ConstraintNames)
+	{
+		if(auto ConstraintOptions = PhatConstraintOptions.ConstraintParamsByName.Find(Name))
+		{
+			int32 BodyIndex = PhysicsAsset->FindBodyIndex(ConstraintOptions->ConstraintBone1);
+			if(BodyIndex  != INDEX_NONE)
+			{
+				if(auto Body = PhysicsAsset->SkeletalBodySetups[BodyIndex])
+				{
+					ConstraintOptions->LinearStrength = ScaleFactor * Body->DefaultInstance.GetBodyMass();
+					ConstraintOptions->AngularStrength = ScaleFactor * Body->DefaultInstance.GetBodyMass();
+				}
+			}
+		}
+	}
+	return true;	
+}
+
+bool UPhysicsEditorBPLibrary::MirrorConstraintOptions(UPhysicsAsset* PhysicsAsset, TArray<FName> ConstraintNames,
+                                                      FPhatConstraintOptions Options, bool bRightToLeft)
+{
+	FString Suffix = bRightToLeft ? "_r" : "_l"; 
+	FString MirrorSuffix = !bRightToLeft ? "_r" : "_l"; 
+	FConstraintParams Params = FConstraintParams();
+	
+	if(PhysicsAsset)
+	{
+		for(FName Name : ConstraintNames)
+		{
+			if(Name.ToString().EndsWith(Suffix))
+			{
+				int32 Index = PhysicsAsset->FindConstraintIndex(Name);
+				if(Index != INDEX_NONE)
+				{
+					if(GetConstraintParams(PhysicsAsset, Index, Params))
+					{
+						FName MirrorName = FName(Name.ToString().LeftChop(2) + MirrorSuffix);
+						int32 MirrorIndex = PhysicsAsset->FindConstraintIndex(MirrorName);
+						if(MirrorIndex != INDEX_NONE)
+						{
+							auto MirrorConstraint = PhysicsAsset->ConstraintSetup[MirrorIndex];
+							Params.JointName = MirrorConstraint->DefaultInstance.JointName;
+							Params.ConstraintBone1 = MirrorConstraint->DefaultInstance.ConstraintBone1;
+							Params.ConstraintBone2 = MirrorConstraint->DefaultInstance.ConstraintBone2;
+							ApplyConstraintParams(PhysicsAsset, Params);
+							// Options.AllConstraintParams.Add(Params);
+						}
+						LGE("Mirror bone not found for %s", *Name.ToString())
+						
+					}
+				}
+			}
+		}
+		// return ApplyAllConstraintOptions(PhysicsAsset, Options);
+	}
+	return false;
+}
+
+bool UPhysicsEditorBPLibrary::CopyConstraintOptions(UPhysicsAsset* PhysicsAsset, UPhysicsAsset* SourcePhysicsAsset, FPhatConstraintOptions Options)
+{
+	FConstraintParams ConstraintOptions;
+	for(FName Name : Options.ConstraintsToCopy)
+	{
+		int32 Index = SourcePhysicsAsset->FindConstraintIndex(Name);
+		if(Index != INDEX_NONE)
+		{
+			if(GetConstraintParams(SourcePhysicsAsset, Index, ConstraintOptions))
+				Options.AllConstraintParams.Add(ConstraintOptions);
+		}
+	}
+	return ApplyAllConstraintOptions(PhysicsAsset, Options);
 }
 
 inline int32 GetClosestPoint(FTransform Transform, TArray<FTransform> Points)
@@ -956,141 +465,311 @@ inline int32 GetClosestPoint(FTransform Transform, TArray<FTransform> Points)
 	return min_index;	
 }
 
-bool UPhysicsEditorBPLibrary::AddBreastPointRingConstraints(USkeletalMeshComponent* SkelMeshComp,
-                                                            FAddConstraintsOptions Options)
+inline FName BreastSpokeName(int32 Spoke, int32 Side)
 {
+	char buffer[40];
+	sprintf_s(buffer,"breast_pt_%02d_%c", Spoke, Side == 0 ? 'l' : 'r');
+	return FName(buffer);
+}
+
+inline FName BreastPtName(int32 Spoke, int32 Point, int32 Side)
+{
+	char buffer[40];
+	sprintf_s(buffer,"breast_pt_%02d_%02d_%c", Spoke, Point, Side == 0 ? 'l' : 'r');
+	return FName(buffer);
+}
+inline FName BreastConstraintName(int32 Spoke, int32 Point, int32 Side, const FString& Kind)
+{
+	char buffer[40];
+	sprintf_s(buffer,"breast_%ls_%02d_%02d_%c", *Kind, Spoke, Point, Side == 0 ? 'l' : 'r');
+	return FName(buffer);
+}
+inline FName BreastBoneName(int32 Number, int32 Side)
+{
+	char buffer[40];
+	sprintf_s(buffer,"breast_%02d_%c", Number, Side == 0 ? 'l' : 'r');
+	return FName(buffer);
+}
+
+
+TArray<int32> UPhysicsEditorBPLibrary::AddPointToParentConstraints(USkeletalMeshComponent* SkeletalMeshComponent,
+                                                                   FAddPointConstraints Options, TArray<FName> ChildBodies)
+{
+	TArray<int32> NewConstraintIndexes = TArray<int32>();
+	
 	TArray<FName> BodyNames;
-	UPhysicsAsset* PhysicsAsset = SkelMeshComp->GetPhysicsAsset();
+	UPhysicsAsset* PhysicsAsset = SkeletalMeshComponent->GetPhysicsAsset();
 	PhysicsAsset->BodySetupIndexMap.GetKeys(BodyNames);
-	int n_rings = 3;	
-	for(int side = 0; side < 2; side++)
+	for(auto BodyName : ChildBodies)
 	{
-		TArray<TArray<FName>> RingNamesList;
-		TArray<TArray<FTransform>> RingTransformsList;
-		for (int ring = 0; ring < n_rings; ring++)
+		FName ParentBone = SkeletalMeshComponent->GetParentBone(BodyName);
+		if(ParentBone == NAME_None)
 		{
-			TArray<FName> RingNames;
-			RingNamesList.Add(RingNames);
-			TArray<FTransform> RingTransforms;
-			RingTransformsList.Add(RingTransforms);
-			char buffer[30];
-			sprintf_s(buffer,"breast_pt_%02d_.._%c", ring+1, side == 0 ? 'l' : 'r');
-			FRegexPattern RegexPattern = FRegexPattern(FString(buffer));
-			for(auto BodyName : BodyNames)
-			{
-				if(RegexMatch(RegexPattern, BodyName.ToString()))
-				{
-					if(auto BodySetup = PhysicsAsset->SkeletalBodySetups[PhysicsAsset->BodySetupIndexMap[BodyName]])
-					{
-						RingTransforms.Add( SkelMeshComp->GetBoneTransform(BodySetup->BoneName));
-						RingNames.Add(BodyName);
-					}
-					LGE("Body Setup for %s not found", *BodyName.ToString())
-				}
-			}
-			// RingNames.Sort();
-
-			int n = RingNames.Num();
-			for(int point = 0; point < n; point++)
-			{
-				// Add constraints between each point and its neighbors in a ring
-				if (Options.bAddRingConstraints)
-				{
-					FName ConstraintBone1 = RingNames[point];
-					FName ConstraintBone2 = RingNames[(point+1) % n];
-					FName ConstraintName = MakeConstraintNameBreastRing(n, side, ring, point);
-					UPhysicsConstraintTemplate* ConstraintSetup = MakeNewConstraint(
-						PhysicsAsset, ConstraintName, ConstraintBone1, ConstraintBone2);
-					// AlignConstraint(SkelMeshComp, ConstraintSetup->DefaultInstance.ConstraintIndex, .5f, .5f);
-				}
-				// Add constraints between each point and its neighbors in a ring
-				if (Options.bAddRootConstraints)
-				{
-					FName ConstraintBone1 = RingNames[point];
-					char Bone2[15];
-					sprintf_s(Bone2, "breast_%02d_%c", ring+1, side ? 'l' : 'r');
-					FName ConstraintBone2 = FName(Bone2);
-					FName ConstraintName = ConstraintBone1;
-					UPhysicsConstraintTemplate* ConstraintSetup = MakeNewConstraint(
-						PhysicsAsset, ConstraintName, ConstraintBone1, ConstraintBone2);
-					AlignConstraint(SkelMeshComp, ConstraintSetup->DefaultInstance.ConstraintIndex, .5f, .5f);
-				}
-			}
-		} // end `ring` loop
-
-		if (Options.bAddTangentConstraints)
+			LGE("No parent bone found for body: %s", *BodyName.ToString())
+			continue;
+		}
+		FConstraintParams Params = Options.PointToParentConstraintParams;
+		Params.ConstraintBone1 = BodyName;
+		Params.ConstraintBone2 = ParentBone;
+		Params.JointName = BodyName;
+		LG("      Added parent constraint %s -> %s", *Params.ConstraintBone1.ToString(), *Params.ConstraintBone2.ToString())
+		int32 NewIndex = MakeNewConstraint(PhysicsAsset, Params);
+		if(NewIndex != INDEX_NONE)
 		{
-			// Add constraint from each point to closest point in the higher ring	
-			for (int ring = 0; ring < n_rings; ring++)
+			NewConstraintIndexes.Add(NewIndex);
+		}
+	}
+
+	return NewConstraintIndexes;
+}
+
+TArray<int32> UPhysicsEditorBPLibrary::AddClosestPointConstraints(USkeletalMeshComponent* SkeletalMeshComponent,
+                                                            FConstraintParams DefaultParams,
+                                                            TArray<FName> TargetBodies,
+                                                            TArray<FName> SourceBodies = TArray<FName>(),
+                                                            int32 NumClosestPoints = 3,
+                                                            bool bExtraBones = false,
+                                                            TArray<int32> ClosestBones = TArray<int32>())
+{
+	TArray<int32> NewConstraintIndexes = TArray<int32>();
+	TArray<FName> BodyNames;
+	UPhysicsAsset* PhysicsAsset = SkeletalMeshComponent->GetPhysicsAsset();
+	PhysicsAsset->BodySetupIndexMap.GetKeys(BodyNames);
+	int32 N = NumClosestPoints;
+	TArray<FVector> TargetLocations, SourceLocations;
+	
+	// Generate Location vector arrays
+	for(auto BodyName : TargetBodies)
+	{
+		TargetLocations.Add(SkeletalMeshComponent->GetBoneTransform(BodyName).GetLocation());
+	}
+	if(SourceBodies.IsEmpty())
+	{
+		SourceBodies = TargetBodies;
+		SourceLocations = TargetLocations;
+	} else {
+		for(auto BodyName : SourceBodies)
+		{
+			SourceLocations.Add(SkeletalMeshComponent->GetBoneTransform(BodyName).GetLocation());
+		} 
+	}
+	int32 NumTargets = TargetBodies.Num();
+	int32 NumSources = SourceBodies.Num();
+	TArray<TArray<float>> DistMatrix = TArray<TArray<float>>();
+	TArray<TArray<bool>> AdjMatrix = TArray<TArray<bool>>();
+
+	// Calculate the distance between each point and store in matrix
+	for(int i = 0; i < NumSources; i++)
+	{
+		DistMatrix.Add(TArray<float>());
+		AdjMatrix.Add(TArray<bool>());
+		for(int j = 0; j < NumTargets; j++)
+		{
+			DistMatrix[i].Add( FVector::Distance(SourceLocations[i], TargetLocations[j]));
+			AdjMatrix[i].Add(false);
+		}
+	}
+	// Create Constraints
+	// for each source bone
+	for(int i = 0; i < NumSources; i++)
+	{
+		LG("    Source: %s", *SourceBodies[i].ToString())
+		TArray<int32> ClosestIndex;
+		ClosestIndex.Init(-1, N);
+		TArray<float> Closest;
+		Closest.Init(FLT_MAX, N);
+		// for  Find the N closest points, store the indices in an array
+		for(int j = 0; j < NumTargets; j++)
+		{
+			if(SourceBodies[i] == TargetBodies[j])
+				continue;
+			for(int k = 0; k < N; k++)
 			{
-			
-				TArray<FName> RingNames = RingNamesList[ring];
-				FName ChildBodyName, ParentBodyName;
-				for(int point = 0; point < RingNames.Num(); point++)
+				if(DistMatrix[i][j] < Closest[k])
 				{
-					ParentBodyName = RingNamesList[ring][point];
-					if(ring < n_rings - 1)
+					for(int p = N-1; p > k; --p)
 					{
-						int32 ClosestIndex = GetClosestPoint(RingTransformsList[ring][point], RingTransformsList[ring+1]);
-						ChildBodyName = RingNamesList[ring+1][ClosestIndex];
-					} else {
-						ChildBodyName = FName("breast_0" + FString::FromInt(n_rings + 1) + "_" + (side == 0 ? 'l' : 'r'));		
+						Closest[p] = Closest[p-1];
+						ClosestIndex[p] = ClosestIndex[p-1];
 					}
-					FName ConstraintName = MakeConstraintNameBreastUp(side, ring, point);
-				
-					UPhysicsConstraintTemplate* ConstraintSetup = MakeNewConstraint(
-						PhysicsAsset, ConstraintName, ChildBodyName, ParentBodyName);
-					
-					// AlignConstraint(SkelMeshComp, ConstraintSetup->DefaultInstance.ConstraintIndex, .5f, .5f);
+					Closest[k] = DistMatrix[i][j];
+					ClosestIndex[k] = j;
+					break;
 				}
 			}
 		}
-		return true;
+		// for each of N closest points, create a constraint
+		if(bExtraBones)
+			N = ClosestBones.IsValidIndex(i) ? ClosestBones[i] : NumClosestPoints;
+		for(int m = 0; m < N; m++)
+		{
+			if(!ClosestIndex.IsValidIndex(m))
+				continue;
+			int32 PointIndex = ClosestIndex[m];
+			if(PointIndex == INDEX_NONE || AdjMatrix[i][PointIndex])
+				continue; 
+			if(TargetBodies.IsValidIndex(PointIndex))
+			{
+				FConstraintParams Params = DefaultParams;
+				// Target body is the child. In case of extra bones, we're anchoring the point to a skeletal bone
+				Params.ConstraintBone1 = TargetBodies[PointIndex];
+				Params.ConstraintBone2 = SourceBodies[i];
+				FString Prefix = bExtraBones ? "pt_bone_" : "pt_pt_";
+				Params.JointName = FName(Prefix + Params.ConstraintBone1.ToString() + "__" + Params.ConstraintBone2.ToString());
+				int32 NewIndex = MakeNewConstraint(PhysicsAsset, Params);
+				if(NewIndex != INDEX_NONE)
+				{
+					LG("      Created Constraint: %s", *Params.JointName.ToString())
+					NewConstraintIndexes.Add(NewIndex);
+					AdjMatrix[i][PointIndex] = AdjMatrix[i][PointIndex] = true;
+				}
+			}
+		}
 	}
-	return false;
+	return NewConstraintIndexes;
 }
 
-
-UPhysicsConstraintTemplate* UPhysicsEditorBPLibrary::MakeNewConstraint(UPhysicsAsset* PhysicsAsset,
-                                                                       FName ConstraintName, FName ChildBodyName,
-                                                                       FName ParentBodyName)
+inline FName MirrorBoneName(FName InName)
 {
-	int32 ChildBodyIndex = PhysicsAsset->FindBodyIndex(ChildBodyName);
-	int32 ParentBodyIndex = PhysicsAsset->FindBodyIndex(ParentBodyName);
-	UPhysicsConstraintTemplate* ConstraintSetup = MakeNewConstraint(
-		PhysicsAsset, ConstraintName, ChildBodyIndex, ParentBodyIndex);
-	return ConstraintSetup;
+	if(InName.ToString().EndsWith("_l"))
+		return FName(InName.ToString().LeftChop(1) + "r");
+	if(InName.ToString().EndsWith("_r"))
+		return FName(InName.ToString().LeftChop(1) + "l");
+	return InName;
+}
+
+inline FString MirrorPatternString(FString InPatternString)
+{
+	if(InPatternString.EndsWith("_l"))
+		return InPatternString.LeftChop(1) + "r";
+	if(InPatternString.EndsWith("_r"))
+		return InPatternString.LeftChop(1) + "l";
+	return InPatternString;
+}
+
+TArray<int32> UPhysicsEditorBPLibrary::AddPointConstraints(USkeletalMeshComponent* SkeletalMeshComponent,
+                                                            FAddPointConstraints Options)
+{
 	
-}
-UPhysicsConstraintTemplate* UPhysicsEditorBPLibrary::MakeNewConstraint(UPhysicsAsset* PhysicsAsset,
-                                                                       FName ConstraintName, int32 ChildBodyIndex,
-                                                                       int32 ParentBodyIndex)
-{
-	int32 ConstraintIndex = PhysicsAsset->FindConstraintIndex(ConstraintName);
-	if (ConstraintIndex == INDEX_NONE)
+	TArray<FName> BodyNames, TargetBodies;
+	UPhysicsAsset* PhysicsAsset = SkeletalMeshComponent->GetPhysicsAsset();
+	PhysicsAsset->BodySetupIndexMap.GetKeys(BodyNames);
+	TArray<int32> ConstraintIndexes, TempConstraintIndexes;
+	for(int i = 0; i < Options.bAddMirrorConstraints + 1; i++)
 	{
-		ConstraintIndex = FPhysicsAssetUtils::CreateNewConstraint(PhysicsAsset, ConstraintName);
+		FString PatternString = (i == 0) ? Options.PointPatternString : MirrorPatternString(Options.PointPatternString);
+		TargetBodies = FilterNames(BodyNames, PatternString);
+		if (Options.bAdjustBodies)
+		{
+			LG("  Adjusting Bodies for pattern: %s", *Options.PointPatternString)	
+			AdjustBodies(SkeletalMeshComponent, Options.AdjustBodiesOptions, TargetBodies);
+		}
+		if (Options.bAdjustConstraints)
+		{
+			LG("  Adjusting Constraints for pattern: %s", *Options.PointPatternString)	
+			AdjustConstraints(SkeletalMeshComponent, Options.AdjustConstraintsOptions, TargetBodies);
+		}
+		if (Options.bAddPointToPointConstraints)
+		{
+			// Point to Point constraints
+			LG("  Add Closest Point to Point Constraints for pattern: %s", *Options.PointPatternString)	
+			TempConstraintIndexes = AddClosestPointConstraints(SkeletalMeshComponent, Options.PointToPointConstraintParams,
+			                                                   TargetBodies, TArray<FName>(), Options.NumClosestPoints);
+			ConstraintIndexes.Append(TempConstraintIndexes);
+		}
+		if (Options.bAddPointToParentConstraints)
+		{
+			// Point to Parent constraints
+			LG("  Add Closest Point to Parent Constraints for pattern: %s", *Options.PointPatternString)	
+			TempConstraintIndexes = AddPointToParentConstraints(SkeletalMeshComponent, Options, TargetBodies);
+			ConstraintIndexes.Append(TempConstraintIndexes);
+		}
+
+		if ( !Options.ExtraBonesToClosestPoints.IsEmpty() )
+		{
+			LG("  Add closest points to other body Constraints for pattern: %s", *Options.PointPatternString)	
+			// Point to Bone Constraints
+			TArray<FName> SourceBodies;
+			TArray<int32> ClosestPoints;
+			Options.ExtraBonesToClosestPoints.GetKeys(SourceBodies);
+			int j = 0;
+			for(auto BodyName : SourceBodies)
+			{
+				if(i == 1)
+				{
+					BodyName = MirrorBoneName(BodyName);
+					SourceBodies[j++] = BodyName;
+				}
+				ClosestPoints.Add(Options.ExtraBonesToClosestPoints.FindOrAdd(BodyName, 3));
+			}
+			TempConstraintIndexes = AddClosestPointConstraints(SkeletalMeshComponent, Options.ExtraBonesConstraintParams,
+			                                                   TargetBodies, SourceBodies,
+			                                                   Options.NumClosestPoints, true, ClosestPoints);
+			ConstraintIndexes.Append(TempConstraintIndexes);
+		}
 	}
+	LG("Added or modified %d constraints.", ConstraintIndexes.Num())
+	return ConstraintIndexes;
+}
+
+TArray<int32> UPhysicsEditorBPLibrary::AddPhatConstraints(USkeletalMeshComponent* SkeletalMeshComponent,
+	FPhatConstraintOptions Options)
+{
+	UPhysicsAsset* PhysicsAsset = SkeletalMeshComponent->GetPhysicsAsset();
+	TArray<int32> NewConstraintIndexes;
+	if(Options.bAddGluteCores)
+		NewConstraintIndexes += AddPointConstraints(SkeletalMeshComponent, Options.GluteCores);
+	if(Options.bAddGluteSpokes)
+		NewConstraintIndexes += AddPointConstraints(SkeletalMeshComponent, Options.GluteSpokes);
+	if(Options.bAddGlutePoints)
+		NewConstraintIndexes += AddPointConstraints(SkeletalMeshComponent, Options.GlutePoints);
+	if(Options.bAddBreastCores)
+		NewConstraintIndexes += AddPointConstraints(SkeletalMeshComponent, Options.BreastCores);
+	if(Options.bAddBreastSpokes)
+		NewConstraintIndexes += AddPointConstraints(SkeletalMeshComponent, Options.BreastSpokes);
+	if(Options.bAddBreastPoints)
+		NewConstraintIndexes += AddPointConstraints(SkeletalMeshComponent, Options.BreastPoints);
+
+	PhysicsAsset->MarkPackageDirty();
+	PhysicsAsset->RefreshPhysicsAssetChange();
+	return NewConstraintIndexes;
+}
+
+int32 UPhysicsEditorBPLibrary::MakeNewConstraint(UPhysicsAsset* PhysicsAsset,
+                                                 FConstraintParams Params)
+{
+	FName ConstraintBone1 = Params.ConstraintBone1;
+	FName ConstraintBone2 = Params.ConstraintBone2;
+	FName JointName = Params.JointName;
+	int32 ChildIndex = PhysicsAsset->FindBodyIndex(ConstraintBone1);
+	int32 ParentIndex = PhysicsAsset->FindBodyIndex(ConstraintBone2);
+	if( ChildIndex == INDEX_NONE || ParentIndex == INDEX_NONE) {
+		LGE("Bone %s or Bone %s not found in physics asset", *ConstraintBone1.ToString(), *ConstraintBone2.ToString())
+		return INDEX_NONE;
+	}
+	int32 ConstraintIndex = PhysicsAsset->FindConstraintIndex(JointName);
+	if (ConstraintIndex != INDEX_NONE && !Params.bOverwriteExisting) {
+		LGV("Constraint %s already exists, not overwriting", *JointName.ToString())
+		return INDEX_NONE;
+	}
+	
+	if(JointName == FName())
+		JointName = FName(ConstraintBone1.ToString() + "__" + ConstraintBone2.ToString());
+	
+	ConstraintIndex = FPhysicsAssetUtils::CreateNewConstraint(PhysicsAsset, JointName);
 	if (ConstraintIndex != INDEX_NONE)
 	{
-		if (auto ConstraintSetup = PhysicsAsset->ConstraintSetup[ConstraintIndex])
-		{
-			ConstraintSetup->Modify(false);
-			UBodySetup* ChildBodySetup = PhysicsAsset->SkeletalBodySetups[ ChildBodyIndex ];
-			UBodySetup* ParentBodySetup = PhysicsAsset->SkeletalBodySetups[ ParentBodyIndex ];
-			if(ChildBodySetup && ParentBodySetup)
-			{
-				FName ConstraintBone1 = ChildBodySetup->BoneName;
-				FName ConstraintBone2 = ParentBodySetup->BoneName;
-				ConstraintSetup->DefaultInstance.ConstraintBone1 = ConstraintBone1;
-				ConstraintSetup->DefaultInstance.ConstraintBone2 =  ConstraintBone2;
-				ConstraintSetup->SetDefaultProfile(ConstraintSetup->DefaultInstance);
-				PhysicsAsset->DisableCollision(ChildBodyIndex, ParentBodyIndex);
-				return ConstraintSetup;
-			}
-		}
+		UPhysicsConstraintTemplate* ConstraintSetup = PhysicsAsset->ConstraintSetup[ConstraintIndex];
+		ConstraintSetup->DefaultInstance.ConstraintBone1 = ConstraintBone1;
+		ConstraintSetup->DefaultInstance.ConstraintBone2 = ConstraintBone2;
+		ApplyConstraintParams(PhysicsAsset, Params);
+		ConstraintSetup->DefaultInstance.SnapTransformsToDefault(EConstraintTransformComponentFlags::All, PhysicsAsset);
+		PhysicsAsset->DisableCollision(ChildIndex, ParentIndex);
+		
+		return ConstraintIndex;
 	}
-	return nullptr;
+	LGE("Constraint %s not able to be created", *JointName.ToString())
+	return INDEX_NONE;
 }
 
 
@@ -1102,24 +781,16 @@ bool UPhysicsEditorBPLibrary::RegexMatch(FRegexPattern Pattern, FString Str)
 	return false;
 }
 
-FPhysAssetCreateParams FPhysAssetCreateParamsRow::GetCreateParams() const
+TArray<FName> UPhysicsEditorBPLibrary::FilterNames(TArray<FName> Names, FString PatternString)
 {
-	FPhysAssetCreateParams CreateParams;	
-	CreateParams.MinBoneSize = MinBoneSize;
-	CreateParams.MinWeldSize = MinWeldSize;
-	CreateParams.GeomType = GeomType;
-	CreateParams.VertWeight = VertWeight;
-	CreateParams.bAutoOrientToBone = bAutoOrientToBone;
-	CreateParams.bCreateConstraints = bCreateConstraints;
-	CreateParams.bWalkPastSmall = true;
-	CreateParams.bBodyForAll = bBodyForAll;
-	CreateParams.bDisableCollisionsByDefault = bDisableCollisionsByDefault;
-	CreateParams.AngularConstraintMode = AngularConstraintMode;
-	CreateParams.HullCount = HullCount;
-	CreateParams.MaxHullVerts = MaxHullVerts;
-	CreateParams.LevelSetResolution = LevelSetResolution;
-	CreateParams.LatticeResolution = LatticeResolution;
-	return CreateParams;
+	TArray<FName> OutNames;
+	FRegexPattern Pattern = FRegexPattern(PatternString);
+	for(FName Name : Names)
+	{
+		if(RegexMatch(Pattern, Name.ToString()))
+			OutNames.Add(Name);
+	}
+	return OutNames;
 }
 
 void UPhysicsEditorBPLibrary::SaveAsset(FString AssetPath, bool& bOutSuccess, FString& OutInfoMessage)
@@ -1143,13 +814,3 @@ void UPhysicsEditorBPLibrary::SaveAsset(FString AssetPath, bool& bOutSuccess, FS
 	bOutSuccess = UEditorLoadingAndSavingUtils::SavePackages({ Package }, false);
 	OutInfoMessage = FString::Printf(TEXT("Save Asset %s - '%s'"), *FString(bOutSuccess? "Succeeded" : "Failed"), *AssetPath);
 }
-//
-// void UPhysicsEditorBPLibrary::MarkAssetModified(FString AssetPath, bool& bOutSuccess, FString& OutInfoMessage)
-// {
-// }
-//
-// TArray<UObject*> UPhysicsEditorBPLibrary::GetModifiedAssets(bool& boutSuccess, FString& OutInfoMessage)
-// {
-// 	return {};
-// }
-
