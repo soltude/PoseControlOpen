@@ -1,0 +1,7 @@
+﻿Breast and glute bones are based on a Core-Spoke-Point system. 
+
+Core bones go through the center of the body part, which may have Spoke bones as children, which have Point bone children that should terminate below the skin. Sphere colliders are created on each bone, with collision disabled between them (the colliders all overlap). Point colliders should be sized and placed such that the collider approximates the curvature of the body part. Parent bodies should always have more mass then their children for best results. 
+
+Constraints are created for each parent-child relationship, then Spoke-Spoke and Point-Point constraints are created based on a naive n-closest-neighbor algorithm. You can also add constraints between other bodies and their closest points/spokes (This is useful for constraining the base breast point bones to the clavicle and spine.) Parent-child and Point-Bone joints should have linear and angular limits set; Point-Point constraints should only need linear limits (angular is free.) Linear and angular drives are created and the drive strength is set proportional to the mass of the child body. 
+
+The main entry point for setting up breast and glute physics is the `AddPhatConstraints` function. Bodies for all bones should be created beforehand, but this function will scale and position them based on the `FPhatConstraintOptions` struct, as well as create constraints based on the options. 

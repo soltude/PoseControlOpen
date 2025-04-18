@@ -11,6 +11,7 @@
 #include "CustomLogging.h"
 
 DEFINE_LOG_CATEGORY(LogAnchor);
+DEFINE_LOG_CATEGORY(LogPhysicsEditor);
 
 static const FName PoseControlTabName("PoseControl");
 

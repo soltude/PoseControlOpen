@@ -28,7 +28,7 @@ public class PoseControlEditor : ModuleRules
 				"Core", "PhysicsUtilities","ModelingComponentsEditorOnly", "Blutility", 
 				// ... add other public dependencies that you statically link with here ...
 				"Persona",
-				"AssetTools"
+				"AssetTools", "PoseControl", "EditorScriptingUtilities"
 			}
 			);
 			
@@ -48,7 +48,7 @@ public class PoseControlEditor : ModuleRules
                 "ModelViewViewModel", 
                 "PhysicsControlEditor",
                 "PhysicsAssetEditor",
-                "PoseControl",
+                "PcCommon",
                 "Projects",
 				"ToolMenus",
 				"Slate",

@@ -5,16 +5,49 @@
 #include "AssetUtils/CreateSkeletalMeshUtil.h"
 #include "DataAssets/PcActorDataAsset.h"
 #include "PhysicsEngine/ConstraintInstance.h"
-#include "PhysicsEditorBPLibrary.generated.h"
+#include "PhysicsAssetTools.generated.h"
+ 
+USTRUCT(BlueprintType)
+struct FMeshBakeOptions
+{
+	GENERATED_BODY()
+public:
+	bool bOverwritePhysicsAsset;
+	bool bOverwriteSkeletalMeshAsset;
+	bool bGeneratePhysicsBodies;
+	bool bCopyTwistBones;
+	bool bDeleteTwistBones;
+	bool bAlignCapsulesToBones;
+};
 
 UCLASS(MinimalAPI)
-class PhysicsAssetTools : public UBlueprintFunctionLibrary
+class UPhysicsAssetTools : public UBlueprintFunctionLibrary
 {
 	GENERATED_BODY()
 
 public:
+	UPROPERTY(BlueprintReadWrite, EditAnywhere)
+	class UDataTable* BodyParamsDataTable;
 	
-	UPhysicsEditorBPLibrary();
+	UPROPERTY(EditAnywhere)
+	TObjectPtr<UPcActorDataAsset> PcActorDataAsset;
+protected:
+	UPROPERTY(BlueprintReadOnly)
+	bool bPhysAssetHelperValid = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	TObjectPtr<UPhysicsAsset> TargetPhysicsAsset; 
+	
+	UPROPERTY(BlueprintReadOnly)
+	TObjectPtr<USkeletalMeshComponent> SkelMeshComp; 
+	
+	UPROPERTY(BlueprintReadOnly)
+	TObjectPtr<USkeletalMesh> NewSkeletalMesh; 
+
+	FTimerHandle TimerHandle;
+public:
+	
+	UPhysicsAssetTools();
 	bool SetDataAsset(UPcActorDataAsset* DataAsset);
 	
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Process Character", Keywords = "PhysicsAsset"), Category = "PoseControlEditor")
@@ -51,5 +84,14 @@ public:
 	
 	UFUNCTION(BlueprintCallable, meta = (DisplayName = "Align Capsule to Bone", Keywords = "PhysicsAsset"), Category = "PoseControlEditor")
 	static bool AlignCapsuleToBone(UPhysicsAsset* PhysicsAsset, USkeletalMesh* SkeletalMesh, FName BodyName);
+	
+	static bool AlignCapsule(UPhysicsAsset* PhysicsAsset, USkeletalMesh* SkeletalMesh, FName BodyName, TArray<FBoneVertInfo> Infos);
 
-}
+};
+
+
+// Helper functions
+
+static FMatrix ComputeCovarianceMatrix(const FBoneVertInfo& VertInfo);
+static FVector ComputeEigenVector(const FMatrix& A);
+

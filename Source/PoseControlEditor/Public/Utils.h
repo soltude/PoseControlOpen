@@ -2,6 +2,22 @@
 
 #include "CoreMinimal.h"
 #include "MeshUtilitiesCommon.h"
+#include "PhysicsEngine/ConstraintInstance.h"
+#include "Utils.generated.h"
+
+
+USTRUCT(BlueprintType)
+struct FConstraintInstanceBP : public FConstraintInstance
+{
+	GENERATED_USTRUCT_BODY()
+};
+
+inline FString MakeAssetPath(FString Directory, FString Filename, FString Prefix = FString())
+{
+	if(Directory[Directory.Len() - 1] != '/')
+		Directory += "/";
+	return Directory + Prefix + Filename;
+}
 
 static FMatrix ComputeCovarianceMatrix(const FBoneVertInfo& VertInfo)
 {
